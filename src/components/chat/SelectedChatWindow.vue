@@ -168,36 +168,42 @@ const onSelectEmoji = (emoji) => {
   })
 }
 const sendMessage = async () => {
-  if (socket.value.readyState === 1 && messageToSend.value.trim() !== "") {
-    await websocketStore.sendMessage(messageToSend.value)
-
-    // make input not editable before receive own message via websocket
-    inputLocked.value = true;
-    // close emoji if open
-    showEmoji.value = false;
-    // append messages without confirmation from websocket
-    currentChatMessages.value.unshift(
-      {
-        user_guid: currentUser.value.userGUID,
-        chat_guid: currentChatGUID,
-        content: messageToSend.value,
-        created_at: new Date(),
-        is_read: false,
-        is_sending: true,
-      }
-    );
-    // Clear the input field
-    messageToSend.value = "";
-    // scroll to bottom when own new message is appended (after DOM update)
-    nextTick(() => {
-      chatStore.scrollToBottom("smooth");
-    })
-
-
-
+  if (messageToSend.value.trim() === "") {
+    return; // Don't send empty messages
+  }
+  
+  try {
+    // Try to send the message
+    const success = await websocketStore.sendMessage(messageToSend.value);
+    
+    if (success) {
+      // make input not editable before receive own message via websocket
+      inputLocked.value = true;
+      // close emoji if open
+      showEmoji.value = false;
+      // append messages without confirmation from websocket
+      currentChatMessages.value.unshift(
+        {
+          user_guid: currentUser.value.userGUID,
+          chat_guid: currentChatGUID.value,
+          content: messageToSend.value,
+          created_at: new Date(),
+          is_read: false,
+          is_sending: true,
+        }
+      );
+      // Clear the input field
+      messageToSend.value = "";
+      // scroll to bottom when own new message is appended (after DOM update)
+      nextTick(() => {
+        chatStore.scrollToBottom("smooth");
+      });
+    }
+  } catch (error) {
+    console.error("Error in sendMessage:", error);
+    messageStore.displaySystemMessage("error", "Failed to send message. Please try again.");
   }
 }
-
 </script>
 
 <style scoped>

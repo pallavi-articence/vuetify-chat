@@ -80,6 +80,30 @@ export const useWebsocketStore = defineStore("websocket", {
     async sendMessage(message) {
       const chatStore = useChatStore();
       const userStore = useUserStore();
+      const messageStore = useMessageStore();
+      
+      // Check if socket exists
+      if (!this.socket) {
+        console.error("WebSocket connection does not exist");
+        messageStore.displaySystemMessage("error", "WebSocket connection lost. Reconnecting...");
+        await this.connectWebsocket();
+        if (!this.socket || this.socket.readyState !== 1) {
+          messageStore.displaySystemMessage("error", "Failed to reconnect. Please try again later.");
+          return false;
+        }
+      }
+      
+      // Check if socket is open
+      if (this.socket.readyState !== 1) {
+        console.error("WebSocket connection is not open");
+        messageStore.displaySystemMessage("error", "WebSocket connection not ready. Reconnecting...");
+        await this.connectWebsocket();
+        if (!this.socket || this.socket.readyState !== 1) {
+          messageStore.displaySystemMessage("error", "Failed to reconnect. Please try again later.");
+          return false;
+        }
+      }
+      
       // Must first create a chat for unassigned chat
       if (chatStore.currentChatGUID === "unassigned") {
         // find friend guid -> cannot assume that it is the first element in array!
@@ -98,15 +122,23 @@ export const useWebsocketStore = defineStore("websocket", {
           console.log("No unassigned Chat found");
         }
       }
-      // Must check that WebSocket connection exists and the message is not empty before calling
-      await this.socket.send(
-        JSON.stringify({
-          type: "new_message",
-          user_guid: userStore.currentUser.userGUID,
-          chat_guid: chatStore.currentChatGUID,
-          content: message,
-        })
-      );
+      
+      try {
+        // Send the message
+        await this.socket.send(
+          JSON.stringify({
+            type: "new_message",
+            user_guid: userStore.currentUser.userGUID,
+            chat_guid: chatStore.currentChatGUID,
+            content: message,
+          })
+        );
+        return true;
+      } catch (error) {
+        console.error("Error sending message:", error);
+        messageStore.displaySystemMessage("error", "Failed to send message. Please try again.");
+        return false;
+      }
     },
 
     async sendMessageRead(message) {
@@ -125,67 +157,6 @@ export const useWebsocketStore = defineStore("websocket", {
           chat_guid: chatGUID,
         })
       );
-    },
-
-    handleNewMessage(receivedMessage) {
-      const chatStore = useChatStore();
-      const messageStore = useMessageStore();
-      const userStore = useUserStore();
-
-      if (receivedMessage.type === "new") {
-        // release input lock
-        chatStore.inputLocked = false;
-        const isMessageFromCurrentUser =
-          receivedMessage.user_guid === userStore.currentUser.userGUID;
-
-        const foundChatIndex = chatStore.directChats.findIndex(
-          (directChat) => directChat.chat_guid === receivedMessage.chat_guid
-        );
-        // check if index is found
-        if (foundChatIndex !== -1) {
-          const foundChat = chatStore.directChats[foundChatIndex];
-          // update updated_at (for chats list on left panel)
-          foundChat.updated_at = receivedMessage.created_at;
-          // increment new message count for chat and all chats if not own message
-          if (!isMessageFromCurrentUser) {
-            foundChat.new_messages_count++;
-            chatStore.totalUnreadMessagesCount++;
-            chatStore.friendTyping = false;
-          }
-
-          // Unshift the found chat to the beginning of the array
-          // if it is not already on top
-          if (foundChatIndex !== 0) {
-            // Remove the found chat from its current position
-            chatStore.directChats.splice(foundChatIndex, 1);
-            chatStore.directChats.unshift(foundChat);
-          }
-        }
-
-        // append new message to the open chat if new message belongs to current chat
-        if (receivedMessage.chat_guid === chatStore.currentChatGUID) {
-
-          // Change data in temporary message
-          // assumes can hold only 1 temporary chat
-          // hence, replaces the first element
-          if (isMessageFromCurrentUser) {
-            // if own message has message.guid => message sent by current WS connection
-            // TODO: should we check if first message being retrieved belongs to the current user?
-            if (!messageStore.currentChatMessages[0].message_guid) {
-              messageStore.currentChatMessages[0].is_sending = false;
-              messageStore.currentChatMessages[0].message_guid =
-                receivedMessage.message_guid;
-              messageStore.currentChatMessages[0].created_at =
-                receivedMessage.created_at;
-            } else {
-              // it is own message sent from other WS connection => append whole message
-              messageStore.currentChatMessages.unshift(receivedMessage)
-            }
-          } else {
-            messageStore.currentChatMessages.unshift(receivedMessage);
-          }
-        }
-      }
     },
 
     async handleUserTyping() {
@@ -304,8 +275,68 @@ export const useWebsocketStore = defineStore("websocket", {
         chatStore.addNewChat(receivedMessage);
       }
     },
+    handleNewMessage(receivedMessage) {
+      const chatStore = useChatStore();
+      const messageStore = useMessageStore();
+      const userStore = useUserStore();
+
+      if (receivedMessage.type === "new") {
+        // release input lock
+        chatStore.inputLocked = false;
+        const isMessageFromCurrentUser =
+          receivedMessage.user_guid === userStore.currentUser.userGUID;
+
+        const foundChatIndex = chatStore.directChats.findIndex(
+          (directChat) => directChat.chat_guid === receivedMessage.chat_guid
+        );
+        // check if index is found
+        if (foundChatIndex !== -1) {
+          const foundChat = chatStore.directChats[foundChatIndex];
+          // update updated_at (for chats list on left panel)
+          foundChat.updated_at = receivedMessage.created_at;
+          // increment new message count for chat and all chats if not own message
+          if (!isMessageFromCurrentUser) {
+            foundChat.new_messages_count++;
+            chatStore.totalUnreadMessagesCount++;
+            chatStore.friendTyping = false;
+          }
+
+          // Unshift the found chat to the beginning of the array
+          // if it is not already on top
+          if (foundChatIndex !== 0) {
+            // Remove the found chat from its current position
+            chatStore.directChats.splice(foundChatIndex, 1);
+            chatStore.directChats.unshift(foundChat);
+          }
+        }
+
+        // append new message to the open chat if new message belongs to current chat
+        if (receivedMessage.chat_guid === chatStore.currentChatGUID) {
+
+          // Change data in temporary message
+          // assumes can hold only 1 temporary chat
+          // hence, replaces the first element
+          if (isMessageFromCurrentUser) {
+            // if own message has message.guid => message sent by current WS connection
+            // TODO: should we check if first message being retrieved belongs to the current user?
+            if (!messageStore.currentChatMessages[0].message_guid) {
+              messageStore.currentChatMessages[0].is_sending = false;
+              messageStore.currentChatMessages[0].message_guid =
+                receivedMessage.message_guid;
+              messageStore.currentChatMessages[0].created_at =
+                receivedMessage.created_at;
+            } else {
+              // it is own message sent from other WS connection => append whole message
+              messageStore.currentChatMessages.unshift(receivedMessage)
+            }
+          } else {
+            messageStore.currentChatMessages.unshift(receivedMessage);
+          }
+        }
+      }
+    },
   },
   getters: {
-    socketExists: (state) => state.socket,
+    socketExists: (state) => !!state.socket,
   },
 });
